@@ -1,0 +1,8 @@
+{
+  "name": "cit-tool",
+  "version": "1.0.0",
+  "description": "CI Ecosystem Management Tool - Like git but for CI packages",
+  "app_name": "cit",
+  "main_file": "cit.py",
+  "commands": ["cit", "cit-init", "cit-add", "cit-push", "cit-pull", "cit-status"]
+}
