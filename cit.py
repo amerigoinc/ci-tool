@@ -1,0 +1,322 @@
+#!/usr/bin/env python3
+"""
+CIT - CI Ecosystem Tool
+Like git but for managing CI packages and workflows
+"""
+import os
+import json
+import sys
+import argparse
+import subprocess
+from pathlib import Path
+import shutil
+
+class CITool:
+    def __init__(self):
+        self.ci_dir = Path.home() / '.ci'
+        self.config_file = self.ci_dir / 'config' / 'cit.json'
+        self.workflows_dir = self.ci_dir / 'workflows'
+        self.config_file.parent.mkdir(exist_ok=True)
+        self.workflows_dir.mkdir(exist_ok=True)
+        
+        self.load_config()
+    
+    def load_config(self):
+        """Load CIT configuration"""
+        if self.config_file.exists():
+            with open(self.config_file, 'r') as f:
+                self.config = json.load(f)
+        else:
+            self.config = {
+                "version": "1.0.0",
+                "workflows": {},
+                "repositories": {},
+                "settings": {
+                    "auto_sync": True,
+                    "backup_before_push": True
+                }
+            }
+            self.save_config()
+    
+    def save_config(self):
+        """Save CIT configuration"""
+        with open(self.config_file, 'w') as f:
+            json.dump(self.config, f, indent=2)
+    
+    def init(self, repo_name=None):
+        """Initialize a new CI repository"""
+        if not repo_name:
+            repo_name = Path.cwd().name
+        
+        repo_path = Path.cwd() / '.cit'
+        repo_path.mkdir(exist_ok=True)
+        
+        # Create cit config
+        cit_config = {
+            "name": repo_name,
+            "version": "1.0.0",
+            "type": "ci-repository",
+            "packages": [],
+            "workflows": [],
+            "dependencies": {}
+        }
+        
+        with open(repo_path / 'config.json', 'w') as f:
+            json.dump(cit_config, f, indent=2)
+        
+        # Register in global config
+        self.config['repositories'][repo_name] = {
+            "path": str(Path.cwd()),
+            "created": self.current_timestamp(),
+            "packages": []
+        }
+        self.save_config()
+        
+        print(f"🎉 Initialized empty CIT repository: {repo_name}")
+        print("💡 Add packages with: cit add <package-name>")
+    
+    def add(self, package_name):
+        """Add a CI package to current repository"""
+        repo_config = self.get_repo_config()
+        if not repo_config:
+            print("❌ Not a CIT repository. Run 'cit init' first.")
+            return
+        
+        # Check if package exists in amerigoinc
+        print(f"🔍 Checking package: {package_name}")
+        
+        # Try to install the package
+        try:
+            result = subprocess.run(['ci', 'install', package_name], 
+                                  capture_output=True, text=True)
+            if result.returncode == 0:
+                repo_config['packages'].append(package_name)
+                self.save_repo_config(repo_config)
+                
+                # Update global config
+                repo_name = Path.cwd().name
+                if repo_name in self.config['repositories']:
+                    self.config['repositories'][repo_name]['packages'].append(package_name)
+                    self.save_config()
+                
+                print(f"✅ Added package: {package_name}")
+                print(f"📦 Total packages: {len(repo_config['packages'])}")
+            else:
+                print(f"❌ Package '{package_name}' not found or installation failed")
+        except Exception as e:
+            print(f"❌ Error: {e}")
+    
+    def status(self):
+        """Show CIT repository status"""
+        repo_config = self.get_repo_config()
+        if not repo_config:
+            print("❌ Not a CIT repository")
+            return
+        
+        print(f"📁 CIT Repository: {repo_config.get('name', 'Unknown')}")
+        print("=" * 40)
+        
+        packages = repo_config.get('packages', [])
+        if packages:
+            print("📦 Packages:")
+            for pkg in packages:
+                print(f"   ✅ {pkg}")
+        else:
+            print("📦 No packages added yet")
+        
+        print(f"\n💡 Commands:")
+        print("   cit add <package>    - Add CI package")
+        print("   cit push             - Export package list")
+        print("   cit pull             - Install all packages")
+    
+    def push(self):
+        """Export package list to cit.packages"""
+        repo_config = self.get_repo_config()
+        if not repo_config:
+            print("❌ Not a CIT repository")
+            return
+        
+        packages = repo_config.get('packages', [])
+        
+        # Create packages file
+        packages_file = Path.cwd() / 'cit.packages'
+        with open(packages_file, 'w') as f:
+            f.write("# CIT Package List\n")
+            f.write("# Generated by cit push\n\n")
+            for pkg in packages:
+                f.write(f"{pkg}\n")
+        
+        print(f"📦 Exported {len(packages)} packages to cit.packages")
+        print("💡 Others can install with: cit pull")
+    
+    def pull(self):
+        """Install all packages from cit.packages"""
+        packages_file = Path.cwd() / 'cit.packages'
+        
+        if not packages_file.exists():
+            print("❌ cit.packages file not found")
+            print("💡 Run 'cit push' in a CIT repository first")
+            return
+        
+        with open(packages_file, 'r') as f:
+            packages = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+        
+        print(f"📥 Installing {len(packages)} packages...")
+        
+        success_count = 0
+        for pkg in packages:
+            print(f"🔧 Installing {pkg}...")
+            try:
+                result = subprocess.run(['ci', 'install', pkg], 
+                                      capture_output=True, text=True)
+                if result.returncode == 0:
+                    print(f"   ✅ {pkg}")
+                    success_count += 1
+                else:
+                    print(f"   ❌ {pkg}")
+            except:
+                print(f"   ❌ {pkg}")
+        
+        print(f"\n🎉 Installed {success_count}/{len(packages)} packages")
+    
+    def create_workflow(self, workflow_name):
+        """Create a CI workflow"""
+        workflow_file = self.workflows_dir / f"{workflow_name}.json"
+        
+        workflow = {
+            "name": workflow_name,
+            "version": "1.0.0",
+            "steps": [],
+            "triggers": [],
+            "packages": []
+        }
+        
+        with open(workflow_file, 'w') as f:
+            json.dump(workflow, f, indent=2)
+        
+        print(f"🎉 Created workflow: {workflow_name}")
+        print("💡 Edit at: ~/.ci/workflows/{workflow_name}.json")
+    
+    def list_workflows(self):
+        """List all CI workflows"""
+        workflows = list(self.workflows_dir.glob("*.json"))
+        
+        if not workflows:
+            print("📋 No workflows found")
+            return
+        
+        print("📋 CI Workflows:")
+        for workflow_file in workflows:
+            with open(workflow_file, 'r') as f:
+                workflow = json.load(f)
+            print(f"   🔄 {workflow['name']} - {len(workflow.get('steps', []))} steps")
+    
+    def get_repo_config(self):
+        """Get current repository config"""
+        repo_config_file = Path.cwd() / '.cit' / 'config.json'
+        if repo_config_file.exists():
+            with open(repo_config_file, 'r') as f:
+                return json.load(f)
+        return None
+    
+    def save_repo_config(self, config):
+        """Save repository config"""
+        repo_config_file = Path.cwd() / '.cit' / 'config.json'
+        repo_config_file.parent.mkdir(exist_ok=True)
+        with open(repo_config_file, 'w') as f:
+            json.dump(config, f, indent=2)
+    
+    def current_timestamp(self):
+        """Get current timestamp"""
+        from datetime import datetime
+        return datetime.now().isoformat()
+    
+    def run(self):
+        """Main command handler"""
+        parser = argparse.ArgumentParser(description="CIT - CI Ecosystem Tool")
+        subparsers = parser.add_subparsers(dest='command', help='Commands')
+        
+        # Init command
+        init_parser = subparsers.add_parser('init', help='Initialize CIT repository')
+        init_parser.add_argument('name', nargs='?', help='Repository name')
+        
+        # Add command
+        add_parser = subparsers.add_parser('add', help='Add CI package')
+        add_parser.add_argument('package', help='Package name to add')
+        
+        # Status command
+        subparsers.add_parser('status', help='Show repository status')
+        
+        # Push command
+        subparsers.add_parser('push', help='Export package list')
+        
+        # Pull command
+        subparsers.add_parser('pull', help='Install packages from cit.packages')
+        
+        # Workflow commands
+        workflow_parser = subparsers.add_parser('workflow', help='Workflow management')
+        workflow_parser.add_argument('action', choices=['create', 'list'], help='Workflow action')
+        workflow_parser.add_argument('name', nargs='?', help='Workflow name')
+        
+        args = parser.parse_args()
+        
+        if not args.command:
+            self.show_help()
+            return
+        
+        if args.command == 'init':
+            self.init(args.name)
+        elif args.command == 'add':
+            self.add(args.package)
+        elif args.command == 'status':
+            self.status()
+        elif args.command == 'push':
+            self.push()
+        elif args.command == 'pull':
+            self.pull()
+        elif args.command == 'workflow':
+            if args.action == 'create':
+                if args.name:
+                    self.create_workflow(args.name)
+                else:
+                    print("❌ Workflow name required")
+            elif args.action == 'list':
+                self.list_workflows()
+        else:
+            self.show_help()
+    
+    def show_help(self):
+        """Show CIT help"""
+        print("🚀 CIT - CI Ecosystem Tool")
+        print("==========================")
+        print("Usage: cit <command> [options]")
+        print("")
+        print("Commands:")
+        print("  init [name]      Initialize CIT repository")
+        print("  add <package>    Add CI package to repository")
+        print("  status           Show repository status")
+        print("  push             Export package list to cit.packages")
+        print("  pull             Install packages from cit.packages")
+        print("  workflow create <name>  Create new workflow")
+        print("  workflow list           List workflows")
+        print("")
+        print("Examples:")
+        print("  cit init my-project          # Create CIT repository")
+        print("  cit add file-tools           # Add CI package")
+        print("  cit status                   # Show packages")
+        print("  cit push                     # Export package list")
+        print("  cit pull                     # Install all packages")
+        print("")
+        print("💡 CIT helps manage CI package dependencies and workflows!")
+
+def main():
+    try:
+        cit = CITool()
+        cit.run()
+    except KeyboardInterrupt:
+        print("\n👋 Goodbye!")
+    except Exception as e:
+        print(f"❌ Error: {e}")
+
+if __name__ == "__main__":
+    main() 
